@@ -1,0 +1,418 @@
+-- SCRIPT WINGS SPAM - ANIMAÇÃO COMPLETA E SEM REMOÇÃO DE EFEITOS
+-- TODOS OS EFEITOS VISUAIS DO JOGO PRESERVADOS
+
+repeat task.wait() until game:IsLoaded()
+
+-- SERVIÇOS GLOBAIS
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local StatsService = game:GetService("Stats")
+local UserInputService = game:GetService("UserInputService")
+local Player = Players.LocalPlayer
+
+-- ==============================================
+-- VARIÁVEIS GLOBAIS
+-- ==============================================
+local revertedRemotes = {}
+local manualSpamActive = false
+
+local remote, f_raw, c = nil, nil, {nil, nil, nil, nil, nil, nil, nil}
+local Enabled, serverFireCounter, fps, lastplayedd, bypasscd = false, 0, 0, 0, false
+local AnimationDelay, AnimationCache, Grab_Parry = 1, {}, nil
+local targetCPS = 200
+local timeAccumulator = 0
+local lastServerFire = 0
+
+local wingsSpamAtivo = false
+local dragging, dragStart, startPos = false, nil, nil
+
+-- CONTROLES DE DESEMPENHO
+local CONEXAO_SPAM1 = nil
+local CONEXAO_SPAM2 = nil
+local CONEXAO_STATUS = nil
+
+-- ==============================================
+-- FUNÇÕES COMPLETAS - ANIMAÇÃO DE VOLTA
+-- ==============================================
+local function isValidRemoteArgs(args)
+	return #args == 7
+		and type(args[2]) == "string"
+		and type(args[3]) == "number"
+		and typeof(args[4]) == "CFrame"
+		and type(args[5]) == "table"
+		and type(args[6]) == "table"
+		and type(args[7]) == "boolean"
+end
+
+local function hookRemote(remote)
+	local meta = getrawmetatable(remote)
+	if not meta then return end
+	
+	setreadonly(meta, false)
+	local oldIndex = meta.__index
+
+	meta.__index = function(self, key)
+		if key == "FireServer" and self:IsA("RemoteEvent") then
+			return function(_, ...)
+				local args = {...}
+				if isValidRemoteArgs(args) or self.Name:find("Parry") then
+					revertedRemotes[self] = args
+				end
+				return oldIndex(self, "FireServer")(_, unpack(args))
+			end
+		end
+		return oldIndex(self, key)
+	end
+	setreadonly(meta, true)
+end
+
+-- FUNÇÕES DE ANIMAÇÃO 100% ORIGINAIS
+local SwordAPI = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("SwordAPI")
+local function GetCharacter() return Player.Character end
+local function GetHumanoid() local char = GetCharacter() return char and char:FindFirstChildOfClass("Humanoid") end
+local function StopAnimation(track) track:Stop(track:GetAttribute("StopFadeTime") or 0.1) end
+local function PlayGrabAnimation(track) track:Play(track:GetAttribute("PlayFadeTime") or 0, track:GetAttribute("PlayWeight") or 1, track:GetAttribute("PlaySpeed") or 1) end
+
+local function GetParryAnimation()
+    local char = GetCharacter()
+    if not char then return nil end
+    local currentSword = char:GetAttribute("CurrentlyEquippedSword")
+    if not currentSword then return SwordAPI.Collection.Default:FindFirstChild("GrabParry") end
+    if AnimationCache[currentSword] then return AnimationCache[currentSword] end
+    local success, swordData = pcall(function() return ReplicatedStorage.Shared.ReplicatedInstances.Swords.GetSword:Invoke(currentSword) end)
+    if not success or type(swordData) ~= "table" then
+        AnimationCache[currentSword] = SwordAPI.Collection.Default:FindFirstChild("GrabParry")
+        return AnimationCache[currentSword]
+    end
+    for _, obj in pairs(SwordAPI.Collection:GetChildren()) do
+        if obj.Name == swordData.AnimationType then
+            local anim = obj:FindFirstChild("GrabParry") or obj:FindFirstChild("Grab")
+            if anim then AnimationCache[currentSword] = anim return anim end
+        end
+    end
+    AnimationCache[currentSword] = SwordAPI.Collection.Default:FindFirstChild("GrabParry")
+    return AnimationCache[currentSword]
+end
+
+local function PlayParry_Animation()
+    local humanoid = GetHumanoid()
+    if not humanoid then return end
+    local animation = GetParryAnimation()
+    if not animation then return end
+    for _, track in pairs(humanoid.Animator:GetPlayingAnimationTracks()) do
+        if track.Name == "GrabParry" or track.Name == "Grab" or track.Name == "SuccessParry" or track.Name == "Success" then
+            if track.Name:find("Grab") then track.TimePosition = 0 end
+            StopAnimation(track)
+        end
+    end
+    Grab_Parry = humanoid.Animator:LoadAnimation(animation)
+    PlayGrabAnimation(Grab_Parry)
+end
+
+local function SpamParry_Animation()
+    if (os.clock() - lastplayedd) >= (AnimationDelay - 0.8) or bypasscd then
+        lastplayedd, bypasscd = os.clock(), false
+        PlayParry_Animation()
+    end
+end
+
+local function setupCapture()
+    local mt = getrawmetatable(game)
+    local old = mt.__index
+    setreadonly(mt, false)
+    
+    mt.__index = newcclosure(function(self, key)
+        if (key == "FireServer" or key == "InvokeServer") then
+            return function(_, ...)
+                local a = {...}
+                if #a == 7 and typeof(a[4]) == "CFrame" then
+                    remote, f_raw = self, self.FireServer
+                    for i=1, 7 do c[i] = a[i] end
+                end
+                return old(self, key)(self, ...)
+            end
+        end
+        return old(self, key)
+    end)
+    
+    setreadonly(mt, true)
+end
+
+-- ==============================================
+-- BOTÃO FLUTUANTE
+-- ==============================================
+local pg = Player:WaitForChild("PlayerGui")
+if pg:FindFirstChild("V39_SPAM_ONLY") then pg.V39_SPAM_ONLY:Destroy() end
+if pg:FindFirstChild("MiniHUDManualSpam") then pg.MiniHUDManualSpam:Destroy() end
+
+local sg = Instance.new("ScreenGui", pg)
+sg.Name = "WingsSpam_Menu"
+sg.ResetOnSpawn = false
+
+local barraMovimento = Instance.new("Frame", sg)
+barraMovimento.Size = UDim2.new(0, 160, 0, 8)
+barraMovimento.Position = UDim2.new(0.2, 0, 0.4, -15)
+barraMovimento.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+barraMovimento.BackgroundTransparency = 0.5
+barraMovimento.Active = true
+barraMovimento.BorderSizePixel = 0
+Instance.new("UICorner", barraMovimento).CornerRadius = UDim.new(1, 0)
+
+local btnPrincipal = Instance.new("Frame", sg)
+btnPrincipal.Size = UDim2.new(0, 160, 0, 45)
+btnPrincipal.Position = UDim2.new(0.2, 0, 0.4, 0)
+btnPrincipal.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+btnPrincipal.BackgroundTransparency = 0.8
+btnPrincipal.BorderSizePixel = 2
+btnPrincipal.BorderColor3 = Color3.fromRGB(100, 100, 100)
+Instance.new("UICorner", btnPrincipal).CornerRadius = UDim.new(0, 10)
+local strokeBtn = Instance.new("UIStroke", btnPrincipal)
+strokeBtn.Color = Color3.fromRGB(100, 100, 100)
+strokeBtn.Thickness = 2
+
+local txtBtn = Instance.new("TextLabel", btnPrincipal)
+txtBtn.Size = UDim2.new(1, 0, 1, 0)
+txtBtn.BackgroundTransparency = 1
+txtBtn.Text = "WINGS SPAM: OFF"
+txtBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+txtBtn.Font = Enum.Font.GothamBold
+txtBtn.TextSize = 16
+txtBtn.TextScaled = true
+txtBtn.TextXAlignment = Enum.TextXAlignment.Center
+txtBtn.TextYAlignment = Enum.TextYAlignment.Center
+
+local btnClick = Instance.new("TextButton", btnPrincipal)
+btnClick.Size = UDim2.new(1, 0, 1, 0)
+btnClick.BackgroundTransparency = 1
+btnClick.Text = ""
+
+-- SISTEMA DE MOVIMENTO
+local function atualizarPosicoes(delta)
+    barraMovimento.Position = UDim2.new(
+        startPos.X.Scale,
+        startPos.X.Offset + delta.X,
+        startPos.Y.Scale,
+        startPos.Y.Offset + delta.Y
+    )
+    btnPrincipal.Position = UDim2.new(
+        startPos.X.Scale,
+        startPos.X.Offset + delta.X,
+        startPos.Y.Scale,
+        startPos.Y.Offset + delta.Y + 15
+    )
+end
+
+barraMovimento.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = barraMovimento.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+btnPrincipal.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = barraMovimento.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        atualizarPosicoes(input.Position - dragStart)
+    end
+end)
+
+-- ==============================================
+-- LÓGICA DE SPAM COM ANIMAÇÃO COMPLETA
+-- ==============================================
+local function iniciarSpam()
+    -- SISTEMA 1
+    if next(revertedRemotes) then
+        CONEXAO_SPAM1 = RunService.Stepped:Connect(function()
+            if manualSpamActive then
+                for _ = 1, math.random(6, 9) do 
+                    for remoteSpam, args in pairs(revertedRemotes) do
+                        pcall(function() remoteSpam:FireServer(unpack(args)) end)
+                    end
+                end
+            end
+        end)
+    end
+
+    -- SISTEMA 2 COM ANIMAÇÃO
+    CONEXAO_SPAM2 = RunService.Heartbeat:Connect(function(dt)
+        if dt > 0 then fps = 1 / dt end
+        if Enabled and remote and f_raw then
+            timeAccumulator += dt
+            local packetsToFire = math.floor(timeAccumulator * targetCPS)
+            if packetsToFire > 0 then
+                timeAccumulator -= (packetsToFire / targetCPS)
+                for i = 1, packetsToFire do
+                    task.spawn(function() pcall(f_raw, remote, unpack(c)) end)
+                    serverFireCounter += 1
+                end
+                SpamParry_Animation() -- ANIMAÇÃO CHAMADA AQUI
+            end
+        else 
+            timeAccumulator = 0 
+        end
+    end)
+
+    -- STATUS
+    CONEXAO_STATUS = task.spawn(function()
+        while wingsSpamAtivo do
+            local ping = StatsService.Network.ServerStatsItem["Data Ping"]:GetValue() or 0
+            local currentCPS = math.floor((serverFireCounter - lastServerFire) / 0.2)
+            lastServerFire = serverFireCounter
+            task.wait(0.2)
+        end
+    end)
+end
+
+local function pararSpam()
+    if CONEXAO_SPAM1 then
+        CONEXAO_SPAM1:Disconnect()
+        CONEXAO_SPAM1 = nil
+    end
+    if CONEXAO_SPAM2 then
+        CONEXAO_SPAM2:Disconnect()
+        CONEXAO_SPAM2 = nil
+    end
+    if CONEXAO_STATUS then
+        task.cancel(CONEXAO_STATUS)
+        CONEXAO_STATUS = nil
+    end
+end
+
+local function atualizarEstadoBotao()
+    if wingsSpamAtivo then
+        btnPrincipal.BackgroundTransparency = 0.5
+        btnPrincipal.BackgroundColor3 = Color3.fromRGB(0, 100, 0)
+        btnPrincipal.BorderColor3 = Color3.fromRGB(0, 150, 0)
+        strokeBtn.Color = Color3.fromRGB(0, 150, 0)
+        txtBtn.Text = "WINGS SPAM: ON"
+        barraMovimento.BackgroundColor3 = Color3.fromRGB(0, 100, 0)
+        barraMovimento.BackgroundTransparency = 0.3
+        iniciarSpam()
+    else
+        btnPrincipal.BackgroundTransparency = 0.8
+        btnPrincipal.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        btnPrincipal.BorderColor3 = Color3.fromRGB(100, 100, 100)
+        strokeBtn.Color = Color3.fromRGB(100, 100, 100)
+        txtBtn.Text = "WINGS SPAM: OFF"
+        barraMovimento.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+        barraMovimento.BackgroundTransparency = 0.5
+        pararSpam()
+    end
+end
+
+-- AÇÃO DO BOTÃO
+btnClick.MouseButton1Click:Connect(function()
+    wingsSpamAtivo = not wingsSpamAtivo
+    
+    manualSpamActive = wingsSpamAtivo and next(revertedRemotes)
+    Enabled = wingsSpamAtivo and remote ~= nil
+    
+    atualizarEstadoBotao()
+end)
+
+-- ==============================================
+-- INICIALIZAÇÃO COMPLETA
+-- ==============================================
+for _, r in ipairs(ReplicatedStorage:GetChildren()) do
+	if r:IsA("RemoteEvent") then hookRemote(r) end
+end
+
+ReplicatedStorage.ChildAdded:Connect(function(r)
+	if r:IsA("RemoteEvent") then hookRemote(r) end
+end)
+
+setupCapture()
+
+-- EVENTO DE PARRY SUCESSO COM ANIMAÇÃO
+ReplicatedStorage.Remotes.ParrySuccess.OnClientEvent:Connect(function()
+    bypasscd = true
+    local humanoid = GetHumanoid()
+    if humanoid then
+        for _, track in pairs(humanoid.Animator:GetPlayingAnimationTracks()) do
+            if track.Name == "GrabParry" or track.Name == "Grab" then
+                StopAnimation(track)
+            end
+        end
+    end
+end)
+
+-- INICIALIZA O BOTÃO
+atualizarEstadoBotao()
+IPAIS - ORIGINAIS E FUNCIONAIS
+-- ==============================================
+-- LOOP DO PRIMEIRO SCRIPT
+RunService.Stepped:Connect(function()
+	if manualSpamActive then
+		for _ = 1, math.random(6, 9) do 
+			for remoteSpam, args in pairs(revertedRemotes) do
+				pcall(function() remoteSpam:FireServer(unpack(args)) end)
+			end
+		end
+	end
+end)
+
+-- LOOP DO SEGUNDO SCRIPT
+RunService.Heartbeat:Connect(function(dt)
+    if dt > 0 then fps = 1 / dt end
+    if Enabled and remote and f_raw then
+        timeAccumulator += dt
+        local packetsToFire = math.floor(timeAccumulator * targetCPS)
+        if packetsToFire > 0 then
+            timeAccumulator -= (packetsToFire / targetCPS)
+            for i = 1, packetsToFire do
+                task.spawn(function() pcall(f_raw, remote, unpack(c)) end)
+                serverFireCounter += 1
+            end
+            task.spawn(SpamParry_Animation)
+        end
+    else timeAccumulator = 0 end
+end)
+
+-- LOOP DE STATUS DO PRIMEIRO SCRIPT
+task.spawn(function()
+    while sg.Parent do
+        if not next(revertedRemotes) then
+            -- Sem dados ainda
+        elseif not manualSpamActive then 
+            -- Pronto
+        else
+            -- Spamando
+        end
+        task.wait(0.2)
+    end
+end)
+
+-- LOOP DE STATUS DO SEGUNDO SCRIPT
+task.spawn(function()
+    while true do
+        task.wait(0.2)
+        local ping = StatsService.Network.ServerStatsItem["Data Ping"]:GetValue() or 0
+        local currentCPS = math.floor((serverFireCounter - lastServerFire) / 0.2)
+        lastServerFire = serverFireCounter
+        -- Status interno, não mostra na tela para manter clean
+    end
+end)
+
+-- ==============================================
+-- INICIALIZA O BOTÃO
+-- ==============================================
+atualizarEstadoBotao()
