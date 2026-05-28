@@ -1,0 +1,19 @@
+--// Whitelist simples por Username
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+-- Username permitido
+local Whitelist = {
+["CaceSigma03"] = true
+}
+
+-- Verifica whitelist
+if Whitelist[LocalPlayer.Name] then
+print("Valid Player")
+
+-- Seu loadstring aqui  
+loadstring(game:HttpGet("https://raw.githubusercontent.com/wingsware/WingsWare/refs/heads/main/Macro%20Blade%20ball%20mobile%20wings%20premium"))()
+
+else
+LocalPlayer:Kick("invalid player.")
+end
