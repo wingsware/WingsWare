@@ -1,0 +1,21 @@
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+-- Whitelist
+local Whitelist = {
+    ["xenogg998"] = true
+}
+
+if Whitelist[LocalPlayer.Name] then
+    print("Valid Player")
+
+    local success, err = pcall(function()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/wingsware/WingsWare/refs/heads/main/Enjoy1"))()
+    end)
+
+    if not success then
+        warn("Erro ao carregar o script: " .. tostring(err))
+    end
+else
+    LocalPlayer:Kick("Você não está na whitelist.")
+end
