@@ -1,0 +1,658 @@
+-- =========================================
+-- PRIVATE WINGS SPAM - VERSÃO FINAL COMPLETA
+-- =========================================
+
+repeat task.wait() until game:IsLoaded()
+
+-- SERVIÇOS
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local StatsService = game:GetService("Stats")
+local Debris = game:GetService("Debris")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local ChatService = game:GetService("Chat")
+
+local Player = Players.LocalPlayer
+
+-- =========================================
+-- VARIÁVEIS
+-- =========================================
+
+local revertedRemotes = {}
+local manualSpamActive = false
+
+local remote, f_raw = nil, nil
+local c = {nil,nil,nil,nil,nil,nil,nil}
+local original_args = {}
+
+local Enabled = false
+local bypasscd = false
+local lastplayedd = 0
+
+-- 🎛️ CONFIGURAÇÕES DOS MODOS
+local modos = {
+    ["Normal"]   = {cps = 400, animDelay = 1.0},
+    ["Legit"]    = {cps = 210, animDelay = 3.2}, -- ANIMAÇÃO MUITO LENTA
+    ["Blatant"]  = {cps = 700, animDelay = 0.6},
+    ["Moderate"] = {cps = 390, animDelay = 0.85}, -- METADE DE 780
+}
+local modoAtual = "Normal"
+local targetCPS = modos[modoAtual].cps
+local AnimationDelay = modos[modoAtual].animDelay
+local spamAccum = 0
+
+local wingsSpamAtivo = false
+
+local CONEXAO_SPAM1 = nil
+local CONEXAO_SPAM2 = nil
+
+local dragging = false
+local dragStart = nil
+local startPos = nil
+
+local frameToggle = false
+local menuModosAberto = false
+
+-- 📊 SISTEMA DE INFORMAÇÕES
+local mostrarInfoJogadores = false
+local etiquetasJogadores = {}
+
+-- =========================================
+-- CORES VERMELHAS
+-- =========================================
+local MAIN_COLOR = Color3.fromRGB(180, 0, 0)
+local BORDER_COLOR = Color3.fromRGB(220, 0, 0)
+local BG_COLOR = Color3.fromRGB(0, 0, 0)
+local DISABLED_COLOR = Color3.fromRGB(100, 100, 100)
+local MENU_COLOR = Color3.fromRGB(25, 25, 25)
+local INFO_COLOR = Color3.fromRGB(220, 220, 220)
+
+-- =========================================
+-- FUNÇÃO DE ARGUMENTOS OTIMIZADA
+-- =========================================
+local function getModifiedArgs()
+    local Alive = workspace:FindFirstChild("Alive")
+    local camera = workspace.CurrentCamera
+    local event_data = {}
+    if Alive then
+        for _, entity in pairs(Alive:GetChildren()) do
+            if entity.PrimaryPart then
+                local ok, sp = pcall(function()
+                    return camera:WorldToScreenPoint(entity.PrimaryPart.Position)
+                end)
+                if ok then event_data[entity.Name] = sp end
+            end
+        end
+    end
+    local is_mobile = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
+    local final_aim_target
+    if is_mobile then
+        local vp = camera.ViewportSize
+        final_aim_target = {vp.X/2, vp.Y/2}
+    else
+        local ok, mouse = pcall(function() return UserInputService:GetMouseLocation() end)
+        if ok then final_aim_target = {mouse.X, mouse.Y} else final_aim_target = {0, 0} end
+    end
+    return {
+        original_args[1] or c[1], original_args[2] or c[2], original_args[3] or c[3],
+        camera.CFrame, event_data, final_aim_target, original_args[7] or c[7]
+    }
+end
+
+-- =========================================
+-- ANIMAÇÕES
+-- =========================================
+
+local SwordAPI = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("SwordAPI")
+
+local AnimationCache = {}
+local Grab_Parry = nil
+
+local function GetCharacter()
+	return Player.Character
+end
+
+local function GetHumanoid()
+	local char = GetCharacter()
+	if char then
+		return char:FindFirstChildOfClass("Humanoid")
+	end
+end
+
+local function StopAnimation(track)
+    track:Stop(track:GetAttribute("StopFadeTime") or 0.1)
+end
+
+local function PlayGrabAnimation(track)
+    track:Play(track:GetAttribute("PlayFadeTime") or 0, track:GetAttribute("PlayWeight") or 1, track:GetAttribute("PlaySpeed") or 1)
+end
+
+local function GetParryAnimation()
+	local char = GetCharacter()
+	if not char then
+		return nil
+	end
+
+	local currentSword = char:GetAttribute("CurrentlyEquippedSword")
+
+	if not currentSword then
+		return SwordAPI.Collection.Default:FindFirstChild("GrabParry")
+	end
+
+	if AnimationCache[currentSword] then
+		return AnimationCache[currentSword]
+	end
+
+	local success, swordData = pcall(function()
+		return ReplicatedStorage.Shared.ReplicatedInstances.Swords.GetSword:Invoke(currentSword)
+	end)
+
+	if not success or type(swordData) ~= "table" then
+		AnimationCache[currentSword] = SwordAPI.Collection.Default:FindFirstChild("GrabParry")
+		return AnimationCache[currentSword]
+	end
+
+	for _, obj in pairs(SwordAPI.Collection:GetChildren()) do
+		if obj.Name == swordData.AnimationType then
+			local anim = obj:FindFirstChild("GrabParry") or obj:FindFirstChild("Grab")
+			if anim then
+				AnimationCache[currentSword] = anim
+				return anim
+			end
+		end
+	end
+
+	AnimationCache[currentSword] = SwordAPI.Collection.Default:FindFirstChild("GrabParry")
+	return AnimationCache[currentSword]
+end
+
+local function PlayParry_Animation()
+	local humanoid = GetHumanoid()
+	if not humanoid then
+		return
+	end
+
+	local animation = GetParryAnimation()
+	if not animation then
+		return
+	end
+
+	for _, track in pairs(humanoid.Animator:GetPlayingAnimationTracks()) do
+		if track.Name == "GrabParry" or track.Name == "Grab" or track.Name == "SuccessParry" or track.Name == "Success" then
+			track.TimePosition = 0
+			StopAnimation(track)
+		end
+	end
+
+	Grab_Parry = humanoid.Animator:LoadAnimation(animation)
+	PlayGrabAnimation(Grab_Parry)
+end
+
+local function SpamParry_Animation()
+	if (os.clock() - lastplayedd) >= (AnimationDelay - 0.9) or bypasscd then
+		lastplayedd = os.clock()
+		bypasscd = false
+		PlayParry_Animation()
+	end
+end
+
+-- =========================================
+-- CAPTURA
+-- =========================================
+
+local function setupCapture()
+	local mt = getrawmetatable(game)
+	local old = mt.__index
+	setreadonly(mt, false)
+
+	mt.__index = newcclosure(function(self, key)
+		if key == "FireServer" or key == "InvokeServer" then
+			return function(instance, ...)
+				local a = {...}
+				if #a == 7 and typeof(a[4]) == "CFrame" then
+					remote = self
+					f_raw = old(instance, "FireServer")
+					original_args = a
+					for i = 1, 7 do
+						c[i] = a[i]
+					end
+				end
+				return old(self, key)(self, ...)
+			end
+		end
+		return old(self, key)
+	end)
+
+	setreadonly(mt, true)
+end
+
+-- =========================================
+-- HOOKS
+-- =========================================
+
+local function isValidRemoteArgs(args)
+	return #args == 7 and typeof(args[4]) == "CFrame"
+end
+
+local function hookRemote(remote)
+	local meta = getrawmetatable(remote)
+	if not meta then return end
+	setreadonly(meta, false)
+
+	local oldIndex = meta.__index
+	meta.__index = function(self, key)
+		if key == "FireServer" and self:IsA("RemoteEvent") then
+			return function(_, ...)
+				local args = {...}
+				if isValidRemoteArgs(args) or self.Name:find("Parry") then
+					revertedRemotes[self] = args
+				end
+				return oldIndex(self, "FireServer")(_, unpack(args))
+			end
+		end
+		return oldIndex(self, key)
+	end
+
+	setreadonly(meta, true)
+end
+
+-- =========================================
+-- NO RENDER
+-- =========================================
+
+local function toggleNoRender(state)
+	if Player.PlayerScripts:FindFirstChild("EffectScripts") then
+		Player.PlayerScripts.EffectScripts.ClientFX.Disabled = state
+	end
+	if state then
+		workspace.Runtime.ChildAdded:Connect(function(v)
+			Debris:AddItem(v,0)
+		end)
+	end
+end
+
+-- =========================================
+-- SISTEMA DE INFORMAÇÕES DOS JOGADORES /VIEWINFO
+-- =========================================
+
+local function PegarDadosJogador(jogador)
+    local ping = 0
+    pcall(function()
+        if jogador:FindFirstChild("NetworkStats") and jogador.NetworkStats:FindFirstChild("Ping") then
+            ping = math.floor(jogador.NetworkStats.Ping.Value + 0.5)
+        else
+            ping = math.floor(StatsService.Network.ServerStatsItem["Data Ping"]:GetValue() * (0.9 + math.random() * 0.3) + 0.5)
+        end
+    end)
+
+    local fps = 0
+    pcall(function()
+        if jogador.Character and jogador.Character.PrimaryPart then
+            fps = math.clamp(math.floor(60 * (1 - (ping / 350)) + 0.5), 15, 60)
+        end
+    end)
+
+    ping = ping > 0 and ping or 20
+    fps = fps > 0 and fps or 30
+
+    return fps, ping
+end
+
+local function CriarEtiqueta(jogador)
+    if etiquetasJogadores[jogador] then return end
+
+    local etiqueta = Instance.new("BillboardGui")
+    etiqueta.Name = "InfoJogador"
+    etiqueta.AlwaysOnTop = true
+    etiqueta.Size = UDim2.new(0, 140, 0, 45)
+    etiqueta.MaxDistance = 120
+    etiqueta.LightInfluence = 0
+
+    local texto = Instance.new("TextLabel", etiqueta)
+    texto.Size = UDim2.new(1,0,1,0)
+    texto.BackgroundTransparency = 1
+    texto.TextColor3 = INFO_COLOR
+    texto.Font = Enum.Font.GothamMedium
+    texto.TextScaled = true
+    texto.Text = jogador.Name .. "\nCarregando..."
+
+    local conexao = RunService.Heartbeat:Connect(function()
+        if not mostrarInfoJogadores or not jogador.Character or not jogador.Character.PrimaryPart then
+            etiqueta.Enabled = false
+            return
+        end
+        
+        etiqueta.Enabled = true
+        etiqueta.Adornee = jogador.Character.PrimaryPart
+
+        local fps, ping = PegarDadosJogador(jogador)
+        texto.Text = string.format("%s\nFPS: %d | MS: %d", jogador.Name, fps, ping)
+    end)
+
+    etiquetasJogadores[jogador] = {Gui = etiqueta, Conexao = conexao}
+    etiqueta.Parent = Player.PlayerGui
+end
+
+Players.PlayerRemoving:Connect(function(jogador)
+    if etiquetasJogadores[jogador] then
+        etiquetasJogadores[jogador].Conexao:Disconnect()
+        etiquetasJogadores[jogador].Gui:Destroy()
+        etiquetasJogadores[jogador] = nil
+    end
+end)
+
+Player.Chatted:Connect(function(mensagem)
+    if mensagem:lower() == "/viewinfo" then
+        mostrarInfoJogadores = not mostrarInfoJogadores
+        
+        if mostrarInfoJogadores then
+            for _, jogador in ipairs(Players:GetPlayers()) do
+                if jogador ~= Player then
+                    task.spawn(CriarEtiqueta, jogador)
+                end
+            end
+            Players.PlayerAdded:Connect(function(novoJogador)
+                task.wait(0.3)
+                CriarEtiqueta(novoJogador)
+            end)
+        end
+        
+        ChatService:Chat(Player.Character or workspace, 
+            mostrarInfoJogadores and "[SISTEMA] Informações de jogadores ATIVADAS" or "[SISTEMA] Informações de jogadores DESATIVADAS", 
+            Enum.ChatColor.Blue)
+    end
+end)
+
+-- =========================================
+-- GUI (SEM O TEXTO FPS/MS EM CIMA)
+-- =========================================
+
+local pg = Player:WaitForChild("PlayerGui")
+
+if pg:FindFirstChild("WingsSpam_Menu") then
+	pg.WingsSpam_Menu:Destroy()
+end
+
+local sg = Instance.new("ScreenGui", pg)
+sg.Name = "WingsSpam_Menu"
+sg.ResetOnSpawn = false
+
+-- BARRA DE ARRASTAR
+local barraMovimento = Instance.new("Frame", sg)
+barraMovimento.Size = UDim2.new(0,160,0,8)
+barraMovimento.Position = UDim2.new(0.2, 0, 0.4, -15)
+barraMovimento.BackgroundColor3 = DISABLED_COLOR
+barraMovimento.BackgroundTransparency = 0.5
+barraMovimento.Active = true
+barraMovimento.BorderSizePixel = 0
+Instance.new("UICorner", barraMovimento).CornerRadius = UDim.new(1,0)
+
+-- BOTÃO PRINCIPAL
+local btnPrincipal = Instance.new("Frame", sg)
+btnPrincipal.Size = UDim2.new(0,160,0,45)
+btnPrincipal.Position = UDim2.new(0.2, 0, 0.4, 0)
+btnPrincipal.BackgroundColor3 = BG_COLOR
+btnPrincipal.BackgroundTransparency = 0.8
+btnPrincipal.BorderSizePixel = 2
+btnPrincipal.BorderColor3 = DISABLED_COLOR
+Instance.new("UICorner", btnPrincipal).CornerRadius = UDim.new(0,10)
+
+local strokeBtn = Instance.new("UIStroke", btnPrincipal)
+strokeBtn.Color = DISABLED_COLOR
+strokeBtn.Thickness = 2
+
+local txtBtn = Instance.new("TextLabel", btnPrincipal)
+txtBtn.Size = UDim2.new(1,0,1,0)
+txtBtn.BackgroundTransparency = 1
+txtBtn.Text = "PRIVATE WINGS SPAM: OFF"
+txtBtn.TextColor3 = Color3.new(1,1,1)
+txtBtn.Font = Enum.Font.GothamBold
+txtBtn.TextScaled = true
+
+local btnClick = Instance.new("TextButton", btnPrincipal)
+btnClick.Size = UDim2.new(1,0,1,0)
+btnClick.BackgroundTransparency = 1
+btnClick.Text = ""
+
+-- 🎛️ BOTÃO FINO DE MODO
+local btnMudarModo = Instance.new("TextButton", sg)
+btnMudarModo.Size = UDim2.new(0,160,0,22) 
+btnMudarModo.Position = UDim2.new(0.2, 0, 0.4, 52)
+btnMudarModo.BackgroundColor3 = Color3.fromRGB(30,30,30)
+btnMudarModo.BackgroundTransparency = 0.6
+btnMudarModo.BorderSizePixel = 1
+btnMudarModo.BorderColor3 = MAIN_COLOR
+btnMudarModo.Font = Enum.Font.Gotham
+btnMudarModo.Text = "Changer your mode: "..modoAtual
+btnMudarModo.TextColor3 = Color3.new(1,1,1)
+btnMudarModo.TextScaled = true
+Instance.new("UICorner", btnMudarModo).CornerRadius = UDim.new(0,6)
+
+-- 📜 MENU DE MODOS
+local menuModos = Instance.new("Frame", sg)
+menuModos.Size = UDim2.new(0,160,0,110) 
+menuModos.Position = UDim2.new(0.2, 0, 0.4, 76)
+menuModos.BackgroundColor3 = MENU_COLOR
+menuModos.BackgroundTransparency = 1
+menuModos.BorderSizePixel = 1
+menuModos.BorderColor3 = BORDER_COLOR
+menuModos.Visible = false
+Instance.new("UICorner", menuModos).CornerRadius = UDim.new(0,8)
+
+local tituloModo = Instance.new("TextLabel", menuModos)
+tituloModo.Size = UDim2.new(1,0,0,25)
+tituloModo.BackgroundTransparency = 1
+tituloModo.Text = "SELECT MODE"
+tituloModo.TextColor3 = MAIN_COLOR
+tituloModo.Font = Enum.Font.GothamBold
+tituloModo.TextScaled = true
+
+-- CRIAR BOTÕES DE CADA MODO
+local funcoesModos = {}
+local posY = 26
+for nome, dados in pairs(modos) do
+    local btn = Instance.new("TextButton", menuModos)
+    btn.Size = UDim2.new(1,0,0,22)
+    btn.Position = UDim2.new(0,0,0,posY)
+    btn.BackgroundColor3 = BG_COLOR
+    btn.BackgroundTransparency = 0.3
+    btn.Text = nome.." | CPS: "..dados.cps
+    btn.TextColor3 = Color3.new(1,1,1)
+    btn.Font = Enum.Font.Gotham
+    btn.TextScaled = true
+    btn.BorderSizePixel = 0
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0,4)
+    
+    btn.MouseButton1Click:Connect(function()
+        modoAtual = nome
+        AnimationDelay = dados.animDelay
+        btnMudarModo.Text = "Changer your mode: "..modoAtual
+        
+        TweenService:Create(menuModos, TweenInfo.new(0.3), {BackgroundTransparency = 1}):Play()
+        task.wait(0.3)
+        menuModos.Visible = false
+        menuModosAberto = false
+    end)
+    
+    posY += 23
+end
+
+btnMudarModo.MouseButton1Click:Connect(function()
+    if menuModosAberto then
+        TweenService:Create(menuModos, TweenInfo.new(0.3), {BackgroundTransparency = 1}):Play()
+        task.wait(0.3)
+        menuModos.Visible = false
+        menuModosAberto = false
+    else
+        menuModos.Visible = true
+        TweenService:Create(menuModos, TweenInfo.new(0.3), {BackgroundTransparency = 0}):Play()
+        menuModosAberto = true
+    end
+end)
+
+-- =========================================
+-- DRAG (POSIÇÕES AJUSTADAS SEM O TEXTO)
+-- =========================================
+
+local function atualizarPosicoes(delta)
+	barraMovimento.Position = UDim2.new(
+		startPos.X.Scale, startPos.X.Offset + delta.X,
+		startPos.Y.Scale, startPos.Y.Offset + delta.Y
+	)
+	btnPrincipal.Position = UDim2.new(
+		startPos.X.Scale, startPos.X.Offset + delta.X,
+		startPos.Y.Scale, startPos.Y.Offset + delta.Y + 15
+	)
+    btnMudarModo.Position = UDim2.new(
+		startPos.X.Scale, startPos.X.Offset + delta.X,
+		startPos.Y.Scale, startPos.Y.Offset + delta.Y + 52
+	)
+    menuModos.Position = UDim2.new(
+		startPos.X.Scale, startPos.X.Offset + delta.X,
+		startPos.Y.Scale, startPos.Y.Offset + delta.Y + 76
+	)
+end
+
+barraMovimento.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = barraMovimento.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragging = false
+			end
+		end)
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		atualizarPosicoes(input.Position - dragStart)
+	end
+end)
+
+-- =========================================
+-- SISTEMA DE SPAM SEM AUMENTAR PING
+-- =========================================
+
+local function iniciarSpam()
+	CONEXAO_SPAM1 = RunService.Heartbeat:Connect(function(dt)
+		if wingsSpamAtivo and remote and f_raw then
+            
+            local cpsUsado = modos[modoAtual].cps
+
+            local pingAtual = StatsService.Network.ServerStatsItem["Data Ping"]:GetValue() or 50
+            local limitePorFrame = math.clamp(math.floor(cpsUsado / 60), 2, 10) 
+
+            if pingAtual > 140 then cpsUsado = cpsUsado * 0.8 end
+            if pingAtual > 180 then cpsUsado = cpsUsado * 0.6 end
+
+			spamAccum = spamAccum + dt * cpsUsado
+			local fires = math.floor(spamAccum)
+
+			if fires > 0 then
+                fires = math.min(fires, limitePorFrame)
+				spamAccum = spamAccum - fires
+				local modified_args = getModifiedArgs()
+				for _ = 1, fires do
+					pcall(function()
+						if remote:IsA('RemoteEvent') then
+							f_raw(remote, unpack(modified_args))
+						elseif remote:IsA('RemoteFunction') then
+							remote:InvokeServer(unpack(modified_args))
+						end
+					end)
+				end
+			end
+			SpamParry_Animation()
+		else
+			spamAccum = 0
+		end
+	end)
+end
+
+local function pararSpam()
+	if CONEXAO_SPAM1 then
+		CONEXAO_SPAM1:Disconnect()
+		CONEXAO_SPAM1 = nil
+	end
+	timeAccumulator = 0
+	local humanoid = GetHumanoid()
+	if humanoid and Grab_Parry then
+		Grab_Parry:Stop(0.1)
+	end
+end
+
+local function atualizarEstadoBotao()
+	if wingsSpamAtivo then
+		btnPrincipal.BackgroundTransparency = 0.5
+		btnPrincipal.BackgroundColor3 = MAIN_COLOR
+		btnPrincipal.BorderColor3 = BORDER_COLOR
+		strokeBtn.Color = BORDER_COLOR
+		txtBtn.Text = "PRIVATE WINGS SPAM: ON"
+		barraMovimento.BackgroundColor3 = MAIN_COLOR
+		barraMovimento.BackgroundTransparency = 0.3
+		iniciarSpam()
+	else
+		btnPrincipal.BackgroundTransparency = 0.8
+		btnPrincipal.BackgroundColor3 = BG_COLOR
+		btnPrincipal.BorderColor3 = DISABLED_COLOR
+		strokeBtn.Color = DISABLED_COLOR
+		txtBtn.Text = "PRIVATE WINGS SPAM: OFF"
+		barraMovimento.BackgroundColor3 = DISABLED_COLOR
+		barraMovimento.BackgroundTransparency = 0.5
+		pararSpam()
+	end
+end
+
+-- =========================================
+-- BOTÃO
+-- =========================================
+
+btnClick.MouseButton1Click:Connect(function()
+	wingsSpamAtivo = not wingsSpamAtivo
+	if wingsSpamAtivo then
+		manualSpamActive = next(revertedRemotes)
+		Enabled = remote ~= nil
+	else
+		manualSpamActive = false
+		Enabled = false
+	end
+	atualizarEstadoBotao()
+end)
+
+-- =========================================
+-- INIT
+-- =========================================
+
+for _, r in ipairs(ReplicatedStorage:GetChildren()) do
+	if r:IsA("RemoteEvent") then
+		hookRemote(r)
+	end
+end
+
+ReplicatedStorage.ChildAdded:Connect(function(r)
+	if r:IsA("RemoteEvent") then
+		hookRemote(r)
+	end
+end)
+
+setupCapture()
+toggleNoRender(true)
+
+ReplicatedStorage.Remotes.ParrySuccess.OnClientEvent:Connect(function()
+	bypasscd = true
+	local humanoid = GetHumanoid()
+	if humanoid then
+		for _, track in pairs(humanoid.Animator:GetPlayingAnimationTracks()) do
+			if track.Name == "GrabParry" or track.Name == "Grab" then
+				track:Stop(0.1)
+			end
+		end
+	end
+end)
+
+atualizarEstadoBotao()
